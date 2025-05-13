@@ -387,4 +387,6 @@ Treinamento do Neuro-Fuzzy: Aumente o número de épocas (e.g., para 20) ou adic
 
 Passo de Tempo: Reduza h (e.g., para 0.005) para maior precisão, mas isso aumentará o tempo de execução.
 
-🐞 Depuração no VS Code
+
+
+<img width="1194" alt="Screenshot 2025-05-13 at 12 10 57" src="https://github.com/user-attachments/assets/d6e0a777-dcf2-494a-a904-6c49459d9431" />
