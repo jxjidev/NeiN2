@@ -77,3 +77,4 @@ Força Aplicada ao Longo do Tempo — comparação das forças de controle aplic
 Posição do Carrinho ao Longo do Tempo — mostra deslocamento do carrinho durante controle.
 
 Curva de Convergência do Algoritmo Genético — evolução do erro da melhor solução por geração.
+
