@@ -1,335 +1,210 @@
-# pendulum_control.py
-
 import numpy as np
 import skfuzzy as fuzz
 from skfuzzy import control as ctrl
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from deap import base, creator, tools
 import matplotlib.pyplot as plt
-from deap import base, creator, tools, algorithms
 import random
-import tensorflow as tf
-from tensorflow.keras import layers, models
 import time
 
-# Parâmetros físicos
-m_c = 0.5  # Massa do carrinho (kg)
-m_p = 0.2  # Massa do pêndulo (kg)
-l = 0.3    # Comprimento do pêndulo (m)
-g = 9.8    # Gravidade (m/s^2)
-I = 0.006  # Momento de inércia (kg.m^2)
-h = 0.01   # Passo de tempo aumentado para acelerar (de 0.005)
-b = 0.2    # Coeficiente de amortecimento
+g, l, h = 9.8, 0.3, 0.02
 
-# Variáveis fuzzy
-theta = ctrl.Antecedent(np.arange(-90, 91, 1), 'theta')  # Ângulo (graus)
-dtheta = ctrl.Antecedent(np.arange(-200, 201, 1), 'dtheta')  # Velocidade angular (graus/s)
-x = ctrl.Antecedent(np.arange(-10, 11, 0.1), 'x')  # Posição do carrinho
-dx = ctrl.Antecedent(np.arange(-10, 11, 0.1), 'dx')  # Velocidade do carrinho
-force = ctrl.Consequent(np.arange(-200, 201, 1), 'force')  # Força (N)
+def simulate(F, theta, theta_dot, x, x_dot):
+    sin_theta, cos_theta = np.sin(theta), np.cos(theta)
+    theta_ddot = (g * sin_theta - F * cos_theta) / l
+    x_ddot = F
+    x_dot += h * x_ddot
+    x += h * x_dot
+    theta_dot += h * theta_ddot
+    theta += h * theta_dot
+    return x, x_dot, theta, theta_dot
 
-# Funções de pertinência
-theta['N'] = fuzz.trapmf(theta.universe, [-90, -90, -45, 0])
-theta['Z'] = fuzz.trimf(theta.universe, [-5, 0, 5])
-theta['P'] = fuzz.trapmf(theta.universe, [0, 45, 90, 90])
-dtheta['N'] = fuzz.trapmf(dtheta.universe, [-200, -200, -100, 0])
-dtheta['Z'] = fuzz.trimf(dtheta.universe, [-20, 0, 20])
-dtheta['P'] = fuzz.trapmf(dtheta.universe, [0, 100, 200, 200])
-x['N'] = fuzz.trapmf(x.universe, [-10, -10, -5, 0])
-x['Z'] = fuzz.trimf(x.universe, [-1, 0, 1])
-x['P'] = fuzz.trapmf(x.universe, [0, 5, 10, 10])
-dx['N'] = fuzz.trapmf(dx.universe, [-10, -10, -5, 0])
-dx['Z'] = fuzz.trimf(dx.universe, [-1, 0, 1])
-dx['P'] = fuzz.trapmf(dx.universe, [0, 5, 10, 10])
-force['NL'] = fuzz.trapmf(force.universe, [-200, -200, -120, -60])
-force['NM'] = fuzz.trimf(force.universe, [-120, -60, 0])
-force['NS'] = fuzz.trimf(force.universe, [-60, -20, 0])
-force['Z'] = fuzz.trimf(force.universe, [-20, 0, 20])
-force['PS'] = fuzz.trimf(force.universe, [0, 20, 60])
-force['PM'] = fuzz.trimf(force.universe, [0, 60, 120])
-force['PL'] = fuzz.trapmf(force.universe, [60, 120, 200, 200])
+def create_fis_system():
+    angle = ctrl.Antecedent(np.arange(-1, 1.01, 0.01), 'angle')
+    angle_dot = ctrl.Antecedent(np.arange(-5, 5.1, 0.1), 'angle_dot')
+    force = ctrl.Consequent(np.arange(-100, 101, 1), 'force')
 
-# Regras FIS
-fis_rules = [
-    ctrl.Rule(theta['N'] & dtheta['N'], force['PL']),
-    ctrl.Rule(theta['N'] & dtheta['Z'], force['PM']),
-    ctrl.Rule(theta['N'] & dtheta['P'], force['PS']),
-    ctrl.Rule(theta['Z'] & dtheta['N'], force['PS']),
-    ctrl.Rule(theta['Z'] & dtheta['Z'], force['Z']),
-    ctrl.Rule(theta['Z'] & dtheta['P'], force['NS']),
-    ctrl.Rule(theta['P'] & dtheta['N'], force['NS']),
-    ctrl.Rule(theta['P'] & dtheta['Z'], force['NM']),
-    ctrl.Rule(theta['P'] & dtheta['P'], force['NL']),
-    ctrl.Rule(x['N'] & dx['N'], force['PL']),
-    ctrl.Rule(x['N'] & dx['Z'], force['PM']),
-    ctrl.Rule(x['N'] & dx['P'], force['PS']),
-    ctrl.Rule(x['Z'] & dx['N'], force['PS']),
-    ctrl.Rule(x['Z'] & dx['Z'], force['Z']),
-    ctrl.Rule(x['Z'] & dx['P'], force['NS']),
-    ctrl.Rule(x['P'] & dx['N'], force['NS']),
-    ctrl.Rule(x['P'] & dx['Z'], force['NM']),
-    ctrl.Rule(x['P'] & dx['P'], force['NL']),
-]
-fis_system = ctrl.ControlSystem(fis_rules)
-fis_controller = ctrl.ControlSystemSimulation(fis_system)
+    angle['N'] = fuzz.trimf(angle.universe, [-1, -1, 0])
+    angle['Z'] = fuzz.trimf(angle.universe, [-1, 0, 1])
+    angle['P'] = fuzz.trimf(angle.universe, [0, 1, 1])
 
-# Funções dinâmicas
-def derivatives(state, F):
-    x, dx, theta, dtheta = state
-    theta_rad = np.radians(theta)
-    dtheta_rad = np.radians(dtheta)
-    cos_theta = np.cos(theta_rad)
-    sin_theta = np.sin(theta_rad)
+    angle_dot['N'] = fuzz.trimf(angle_dot.universe, [-5, -5, 0])
+    angle_dot['Z'] = fuzz.trimf(angle_dot.universe, [-5, 0, 5])
+    angle_dot['P'] = fuzz.trimf(angle_dot.universe, [0, 5, 5])
 
-    A = m_c + m_p
-    B = m_p * l * cos_theta
-    D = I + m_p * l**2
-    E = F + m_p * l * dtheta_rad**2 * sin_theta - b * dx
-    G = m_p * g * l * sin_theta - b * dtheta_rad
+    force['NL'] = fuzz.trimf(force.universe, [-100, -100, -50])
+    force['Z'] = fuzz.trimf(force.universe, [-50, 0, 50])
+    force['PL'] = fuzz.trimf(force.universe, [50, 100, 100])
 
-    det = A * D - B**2
-    if det != 0:
-        x_ddot = (D * E - B * G) / det
-        theta_ddot = (-B * E + A * G) / det
-    else:
-        x_ddot = theta_ddot = 0
-    return np.array([dx, x_ddot, dtheta, theta_ddot])
+    rules = [
+        ctrl.Rule(angle['N'] & angle_dot['N'], force['NL']),
+        ctrl.Rule(angle['Z'] & angle_dot['Z'], force['Z']),
+        ctrl.Rule(angle['P'] & angle_dot['P'], force['PL']),
+    ]
 
-def rk4_step(state, F, h):
-    k1 = derivatives(state, F)
-    k2 = derivatives(state + 0.5 * h * k1, F)
-    k3 = derivatives(state + 0.5 * h * k2, F)
-    k4 = derivatives(state + h * k3, F)
-    return state + (h / 6.0) * (k1 + 2*k2 + 2*k3 + k4)
+    system = ctrl.ControlSystem(rules)
+    return system
 
-# Simulação FIS
-t = np.arange(0, 5, h)
-theta_vals_fis = np.zeros(len(t))
-dtheta_vals_fis = np.zeros(len(t))
-x_vals_fis = np.zeros(len(t))
-dx_vals_fis = np.zeros(len(t))
-force_vals_fis = np.zeros(len(t))
+class NeuroFIS(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(4, 32),
+            nn.ReLU(),
+            nn.Linear(32, 1)
+        )
+    def forward(self, x):
+        return self.net(x)
 
-state = np.array([0, 0, 10, 0])
-theta_vals_fis[0], dtheta_vals_fis[0], x_vals_fis[0], dx_vals_fis[0] = 10, 0, 0, 0
+def train_neuro_fis():
+    fis_system = create_fis_system()
+    X, y = [], []
+    for _ in range(500):
+        a = random.uniform(-1, 1)
+        ad = random.uniform(-3, 3)
+        sim = ctrl.ControlSystemSimulation(fis_system)
+        sim.input['angle'] = a
+        sim.input['angle_dot'] = ad
+        sim.compute()
+        force = sim.output['force']
+        X.append([a, ad, 0, 0])
+        y.append(force)
+    X = torch.tensor(X, dtype=torch.float32)
+    y = torch.tensor(y, dtype=torch.float32).view(-1,1)
+    model = NeuroFIS()
+    optimizer = optim.Adam(model.parameters(), lr=0.01)
+    loss_fn = nn.MSELoss()
+    for _ in range(100):
+        optimizer.zero_grad()
+        pred = model(X)
+        loss = loss_fn(pred, y)
+        loss.backward()
+        optimizer.step()
+    return model
 
-start_time = time.time()
-for i in range(1, len(t)):
-    x_vals_fis[i-1], dx_vals_fis[i-1], theta_vals_fis[i-1], dtheta_vals_fis[i-1] = state
-    fis_controller.input['theta'] = theta_vals_fis[i-1]
-    fis_controller.input['dtheta'] = dtheta_vals_fis[i-1]
-    fis_controller.input['x'] = x_vals_fis[i-1]
-    fis_controller.input['dx'] = dx_vals_fis[i-1]
-    fis_controller.compute()
-    F = fis_controller.output['force']
-    force_vals_fis[i] = F
-    state = rk4_step(state, F, h)
-print(f"Tempo FIS: {time.time() - start_time:.2f}s")
-x_vals_fis[-1], dx_vals_fis[-1], theta_vals_fis[-1], dtheta_vals_fis[-1] = state
-
-# Configuração Genético-Fuzzy
-if not hasattr(creator, "FitnessMin"):
+def optimize_fis_with_genetic():
     creator.create("FitnessMin", base.Fitness, weights=(-1.0,))
-if not hasattr(creator, "Individual"):
     creator.create("Individual", list, fitness=creator.FitnessMin)
+    toolbox = base.Toolbox()
+    toolbox.register("attr_float", random.uniform, 0.5, 2.0)
+    toolbox.register("individual", tools.initRepeat, creator.Individual, toolbox.attr_float, 1)
+    toolbox.register("population", tools.initRepeat, list, toolbox.individual)
 
-def evaluate_rules(individual):
-    temp_rules = []
-    force_levels = ['NL', 'NM', 'NS', 'Z', 'PS', 'PM', 'PL']
-    idx = 0
-    for theta_state in ['N', 'Z', 'P']:
-        for dtheta_state in ['N', 'Z', 'P']:
-            temp_rules.append(ctrl.Rule(theta[theta_state] & dtheta[dtheta_state], force[force_levels[individual[idx]]]))
-            idx += 1
-    for x_state in ['N', 'Z', 'P']:
-        for dx_state in ['N', 'Z', 'P']:
-            temp_rules.append(ctrl.Rule(x[x_state] & dx[dx_state], force[force_levels[individual[idx]]]))
-            idx += 1
+    def eval_individual(individual):
+        scale = individual[0]
+        fis_system = create_fis_system()
+        x, x_dot, theta, theta_dot = 0, 0, 0.1, 0
+        total_error = 0
+        for _ in range(100):
+            sim = ctrl.ControlSystemSimulation(fis_system)
+            sim.input['angle'] = theta
+            sim.input['angle_dot'] = theta_dot
+            sim.compute()
+            F = sim.output['force'] * scale
+            x, x_dot, theta, theta_dot = simulate(F, theta, theta_dot, x, x_dot)
+            total_error += abs(theta) + abs(x)
+        return (total_error,)
 
-    temp_system = ctrl.ControlSystem(temp_rules)
-    temp_controller = ctrl.ControlSystemSimulation(temp_system)
+    toolbox.register("evaluate", eval_individual)
+    toolbox.register("mate", tools.cxBlend, alpha=0.5)
+    toolbox.register("mutate", tools.mutGaussian, mu=1.0, sigma=0.1, indpb=0.2)
+    toolbox.register("select", tools.selTournament, tournsize=3)
 
-    t_eval = np.arange(0, 1, h)  # Reduzido para 1 segundo
-    state = np.array([0, 0, 10, 0])
-    theta_sim = np.zeros(len(t_eval))
-    dtheta_sim = np.zeros(len(t_eval))
-    x_sim = np.zeros(len(t_eval))
-    dx_sim = np.zeros(len(t_eval))
-    theta_sim[0], dtheta_sim[0], x_sim[0], dx_sim[0] = 10, 0, 0, 0
+    pop = toolbox.population(n=10)
+    best_errors = []
+    for _ in range(5):
+        offspring = list(map(toolbox.clone, toolbox.select(pop, len(pop))))
+        for c1, c2 in zip(offspring[::2], offspring[1::2]):
+            if random.random() < 0.5:
+                toolbox.mate(c1, c2)
+            if random.random() < 0.2:
+                toolbox.mutate(c1)
+        for ind in offspring:
+            ind.fitness.values = toolbox.evaluate(ind)
+        pop[:] = offspring
 
-    for i in range(1, len(t_eval)):
-        x_sim[i-1], dx_sim[i-1], theta_sim[i-1], dtheta_sim[i-1] = state
-        temp_controller.input['theta'] = theta_sim[i-1]
-        temp_controller.input['dtheta'] = dtheta_sim[i-1]
-        temp_controller.input['x'] = x_sim[i-1]
-        temp_controller.input['dx'] = dx_sim[i-1]
-        temp_controller.compute()
-        F = temp_controller.output['force']
-        state = rk4_step(state, F, h)
-    x_sim[-1], dx_sim[-1], theta_sim[-1], dtheta_sim[-1] = state
+        best = tools.selBest(pop, 1)[0]
+        best_errors.append(best.fitness.values[0])
 
-    theta_error = np.mean(np.abs(theta_sim))
-    x_error = np.mean(np.abs(x_sim))
-    return (theta_error + x_error,)
+    best = tools.selBest(pop, 1)[0]
+    return create_fis_system(), best[0], best_errors
 
-toolbox = base.Toolbox()
-toolbox.register("attr_int", random.randint, 0, 6)
-toolbox.register("individual", tools.initRepeat, creator.Individual, toolbox.attr_int, n=18)
-toolbox.register("population", tools.initRepeat, list, toolbox.individual)
-toolbox.register("evaluate", evaluate_rules)
-toolbox.register("mate", tools.cxTwoPoint)
-toolbox.register("mutate", tools.mutUniformInt, low=0, up=6, indpb=0.2)
-toolbox.register("select", tools.selTournament, tournsize=3)
+def run_simulation(controller, kind='fis', scale=1.0):
+    x, x_dot, theta, theta_dot = 0, 0, 0.1, 0
+    states, forces = [], []
+    start_time = time.time()
+    for _ in range(500):
+        if kind in ['fis', 'genetico']:
+            sim = ctrl.ControlSystemSimulation(controller)
+            sim.input['angle'] = theta
+            sim.input['angle_dot'] = theta_dot
+            sim.compute()
+            F = sim.output['force'] * scale
+        elif kind == 'neuro':
+            inp = torch.tensor([[theta, theta_dot, x, x_dot]], dtype=torch.float32)
+            F = controller(inp).item()
+        else:
+            F = 0
+        x, x_dot, theta, theta_dot = simulate(F, theta, theta_dot, x, x_dot)
+        states.append([x, x_dot, theta, theta_dot])
+        forces.append(F)
+    elapsed = time.time() - start_time
+    states = np.array(states)
+    forces = np.array(forces)
+    avg_error = np.mean(np.abs(states[:, 0]) + np.abs(states[:, 2]))
+    var_error = np.var(np.abs(states[:, 0]) + np.abs(states[:, 2]))
+    avg_time = elapsed / 500
+    return states, forces, avg_error, var_error, avg_time
 
-# Otimização Genético-Fuzzy
-population = toolbox.population(n=10)  # Reduzido para 10
-ngen = 5  # Reduzido para 5
-start_time = time.time()
-for gen in range(ngen):
-    print(f"Geração {gen + 1}/{ngen}")
-    offspring = algorithms.varAnd(population, toolbox, cxpb=0.7, mutpb=0.3)
-    fits = toolbox.map(toolbox.evaluate, offspring)
-    for fit, ind in zip(fits, offspring):
-        ind.fitness.values = fit
-    population = toolbox.select(offspring, k=len(population))
-print(f"Tempo Genético-Fuzzy: {time.time() - start_time:.2f}s")
+def compare_all():
+    fis_system = create_fis_system()
+    neuro_model = train_neuro_fis()
+    genetico_system, scale_factor, gen_errors = optimize_fis_with_genetic()
 
-best_ind = tools.selBest(population, k=1)[0]
-force_levels = ['NL', 'NM', 'NS', 'Z', 'PS', 'PM', 'PL']
-optimized_rules = []
-idx = 0
-for theta_state in ['N', 'Z', 'P']:
-    for dtheta_state in ['N', 'Z', 'P']:
-        optimized_rules.append(ctrl.Rule(theta[theta_state] & dtheta[dtheta_state], force[force_levels[best_ind[idx]]]))
-        idx += 1
-for x_state in ['N', 'Z', 'P']:
-    for dx_state in ['N', 'Z', 'P']:
-        optimized_rules.append(ctrl.Rule(x[x_state] & dx[dx_state], force[force_levels[best_ind[idx]]]))
-        idx += 1
+    fis_states, fis_forces, fis_error, fis_var, fis_time = run_simulation(fis_system, 'fis')
+    genetico_states, genetico_forces, genetico_error, genetico_var, genetico_time = run_simulation(genetico_system, 'genetico', scale_factor)
+    neuro_states, neuro_forces, neuro_error, neuro_var, neuro_time = run_simulation(neuro_model, 'neuro')
 
-gf_system = ctrl.ControlSystem(optimized_rules)
-gf_controller = ctrl.ControlSystemSimulation(gf_system)
+    print(f"FIS: Erro médio = {fis_error:.4f}, Variância = {fis_var:.4f}, Tempo médio = {fis_time:.6f} s")
+    print(f"Genético-FIS: Erro médio = {genetico_error:.4f}, Variância = {genetico_var:.4f}, Tempo médio = {genetico_time:.6f} s")
+    print(f"Neuro-FIS: Erro médio = {neuro_error:.4f}, Variância = {neuro_var:.4f}, Tempo médio = {neuro_time:.6f} s")
 
-# Simulação Genético-Fuzzy
-theta_vals_gf = np.zeros(len(t))
-dtheta_vals_gf = np.zeros(len(t))
-x_vals_gf = np.zeros(len(t))
-dx_vals_gf = np.zeros(len(t))
-force_vals_gf = np.zeros(len(t))
+    fig, axs = plt.subplots(4,1, figsize=(10,16), sharex=True)
 
-state = np.array([0, 0, 10, 0])
-theta_vals_gf[0], dtheta_vals_gf[0], x_vals_gf[0], dx_vals_gf[0] = 10, 0, 0, 0
+    axs[0].plot(fis_forces, label=f'FIS (Erro={fis_error:.3f}, Var={fis_var:.3f}, Tempo={fis_time:.5f}s)')
+    axs[0].plot(genetico_forces, label=f'Genético-FIS (Erro={genetico_error:.3f}, Var={genetico_var:.3f}, Tempo={genetico_time:.5f}s)')
+    axs[0].plot(neuro_forces, label=f'Neuro-FIS (Erro={neuro_error:.3f}, Var={neuro_var:.3f}, Tempo={neuro_time:.5f}s)')
+    axs[0].set_title('Força Aplicada')
+    axs[0].legend()
+    axs[0].grid()
 
-start_time = time.time()
-for i in range(1, len(t)):
-    x_vals_gf[i-1], dx_vals_gf[i-1], theta_vals_gf[i-1], dtheta_vals_gf[i-1] = state
-    gf_controller.input['theta'] = theta_vals_gf[i-1]
-    gf_controller.input['dtheta'] = dtheta_vals_gf[i-1]
-    gf_controller.input['x'] = x_vals_gf[i-1]
-    gf_controller.input['dx'] = dx_vals_gf[i-1]
-    gf_controller.compute()
-    F = gf_controller.output['force']
-    force_vals_gf[i] = F
-    state = rk4_step(state, F, h)
-print(f"Tempo Simulação GF: {time.time() - start_time:.2f}s")
-x_vals_gf[-1], dx_vals_gf[-1], theta_vals_gf[-1], dtheta_vals_gf[-1] = state
+    axs[1].plot(fis_states[:,2], label=f'FIS (Erro={fis_error:.3f}, Var={fis_var:.3f})')
+    axs[1].plot(genetico_states[:,2], label=f'Genético-FIS (Erro={genetico_error:.3f}, Var={genetico_var:.3f})')
+    axs[1].plot(neuro_states[:,2], label=f'Neuro-FIS (Erro={neuro_error:.3f}, Var={neuro_var:.3f})')
+    axs[1].set_title('Ângulo do Pêndulo')
+    axs[1].legend()
+    axs[1].grid()
 
-# Neuro-Fuzzy
-inputs = []
-outputs = []
-for theta_val in np.linspace(-90, 90, 10):  # Reduzido de 20 para 10
-    for dtheta_val in np.linspace(-200, 200, 10):  # Reduzido de 20 para 10
-        for x_val in np.linspace(-10, 10, 5):  # Reduzido de 10 para 5
-            for dx_val in np.linspace(-10, 10, 5):  # Reduzido de 10 para 5
-                fis_controller.input['theta'] = theta_val
-                fis_controller.input['dtheta'] = dtheta_val
-                fis_controller.input['x'] = x_val
-                fis_controller.input['dx'] = dx_val
-                fis_controller.compute()
-                inputs.append([theta_val, dtheta_val, x_val, dx_val])
-                outputs.append(fis_controller.output['force'])
+    axs[2].plot(fis_states[:,0], label=f'FIS (Erro={fis_error:.3f}, Var={fis_var:.3f})')
+    axs[2].plot(genetico_states[:,0], label=f'Genético-FIS (Erro={genetico_error:.3f}, Var={genetico_var:.3f})')
+    axs[2].plot(neuro_states[:,0], label=f'Neuro-FIS (Erro={neuro_error:.3f}, Var={neuro_var:.3f})')
+    axs[2].set_title('Posição do Carrinho')
+    axs[2].legend()
+    axs[2].grid()
 
-inputs = np.array(inputs)
-outputs = np.array(outputs)
+    axs[3].plot(gen_errors, marker='o')
+    axs[3].set_title("Convergência do Algoritmo Genético")
+    axs[3].set_xlabel("Geração")
+    axs[3].set_ylabel("Melhor Erro (fitness)")
+    axs[3].grid()
 
-model = models.Sequential([
-    layers.Dense(64, activation='relu', input_shape=(4,)),
-    layers.Dropout(0.2),
-    layers.Dense(32, activation='relu'),
-    layers.Dropout(0.2),
-    layers.Dense(1)
-])
+    plt.tight_layout()
+    plt.savefig("comparacao_final_controles_completo.png")
+    plt.show()
 
-model.compile(optimizer='adam', loss='mse')
-start_time = time.time()
-model.fit(inputs, outputs, epochs=10, batch_size=32, validation_split=0.2, verbose=1)
-print(f"Tempo Treinamento NF: {time.time() - start_time:.2f}s")
-
-# Simulação Neuro-Fuzzy
-theta_vals_nf = np.zeros(len(t))
-dtheta_vals_nf = np.zeros(len(t))
-x_vals_nf = np.zeros(len(t))
-dx_vals_nf = np.zeros(len(t))
-force_vals_nf = np.zeros(len(t))
-
-state = np.array([0, 0, 10, 0])
-theta_vals_nf[0], dtheta_vals_nf[0], x_vals_nf[0], dx_vals_nf[0] = 10, 0, 0, 0
-
-start_time = time.time()
-for i in range(1, len(t)):
-    x_vals_nf[i-1], dx_vals_nf[i-1], theta_vals_nf[i-1], dtheta_vals_nf[i-1] = state
-    input_data = np.array([[theta_vals_nf[i-1], dtheta_vals_nf[i-1], x_vals_nf[i-1], dx_vals_nf[i-1]]])
-    F = model.predict(input_data, verbose=0)[0][0]
-    force_vals_nf[i] = F
-    state = rk4_step(state, F, h)
-print(f"Tempo Simulação NF: {time.time() - start_time:.2f}s")
-x_vals_nf[-1], dx_vals_nf[-1], theta_vals_nf[-1], dtheta_vals_nf[-1] = state
-
-# Comparação
-def calculate_metrics(theta_vals, x_vals):
-    theta_mse = np.mean(theta_vals**2)
-    x_mse = np.mean(x_vals**2)
-    settling_time = next((i * h for i, val in enumerate(np.abs(theta_vals)) if val < 1), 5)
-    return theta_mse, x_mse, settling_time
-
-fis_metrics = calculate_metrics(theta_vals_fis, x_vals_fis)
-gf_metrics = calculate_metrics(theta_vals_gf, x_vals_gf)
-nf_metrics = calculate_metrics(theta_vals_nf, x_vals_nf)
-
-print("Métricas de Desempenho (em 5s):")
-print(f"FIS - MSE Ângulo: {fis_metrics[0]:.2f}, MSE Posição: {fis_metrics[1]:.2f}, Tempo de Estabilização: {fis_metrics[2]:.2f}s")
-print(f"Genético-Fuzzy - MSE Ângulo: {gf_metrics[0]:.2f}, MSE Posição: {gf_metrics[1]:.2f}, Tempo de Estabilização: {gf_metrics[2]:.2f}s")
-print(f"Neuro-Fuzzy - MSE Ângulo: {nf_metrics[0]:.2f}, MSE Posição: {nf_metrics[1]:.2f}, Tempo de Estabilização: {nf_metrics[2]:.2f}s")
-
-# Gráficos
-plt.figure(figsize=(12, 8))
-plt.subplot(3, 1, 1)
-plt.plot(t, theta_vals_fis, label='FIS')
-plt.plot(t, theta_vals_gf, label='Genético-Fuzzy')
-plt.plot(t, theta_vals_nf, label='Neuro-Fuzzy')
-plt.grid()
-plt.legend()
-plt.xlabel('Tempo (s)')
-plt.ylabel('Ângulo (graus)')
-plt.title('Comparação do Ângulo')
-
-plt.subplot(3, 1, 2)
-plt.plot(t, x_vals_fis, label='FIS')
-plt.plot(t, x_vals_gf, label='Genético-Fuzzy')
-plt.plot(t, x_vals_nf, label='Neuro-Fuzzy')
-plt.grid()
-plt.legend()
-plt.xlabel('Tempo (s)')
-plt.ylabel('Posição')
-plt.title('Comparação da Posição')
-
-plt.subplot(3, 1, 3)
-plt.plot(t, force_vals_fis, label='FIS')
-plt.plot(t, force_vals_gf, label='Genético-Fuzzy')
-plt.plot(t, force_vals_nf, label='Neuro-Fuzzy')
-plt.grid()
-plt.legend()
-plt.xlabel('Tempo (s)')
-plt.ylabel('Força (N)')
-plt.title('Comparação da Força')
-
-plt.tight_layout()
-plt.show()
+if __name__ == "__main__":
+    print("Iniciando simulação:", time.ctime())
+    compare_all()
+    print("Simulação concluída:", time.ctime())
