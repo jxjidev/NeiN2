@@ -23,7 +23,7 @@ O sistema simula o controle de um pêndulo invertido sobre um carrinho, buscando
 
 ---
 
-##📊 Resultados esperados
+## 📊 Resultados esperados
 
 | Controlador  | Erro Médio | Variância do Erro | Tempo Médio (s) |
 | ------------ | ---------- | ----------------- | --------------- |
