@@ -50,6 +50,3 @@ O FIS básico funciona, mas é menos estável e mais impreciso.
 
 ```bash
 pip install numpy scikit-fuzzy matplotlib torch deap
-
----
-
