@@ -23,18 +23,6 @@ O sistema simula o controle de um pêndulo invertido sobre um carrinho, buscando
 
 ---
 
-## ⚙️ Requisitos
-
-- Python 3.8+  
-- Bibliotecas necessárias: numpy, scikit-fuzzy, matplotlib, torch, deap  
-
-### Instalação das dependências:
-
-```bash
-pip install numpy scikit-fuzzy matplotlib torch deap
-
----
-
 ##📊 Resultados esperados
 
 | Controlador  | Erro Médio | Variância do Erro | Tempo Médio (s) |
@@ -50,3 +38,18 @@ O Neuro-FIS apresenta erro e variância muito baixos, com alta eficiência compu
 O Genético-FIS melhora bastante o FIS clássico.
 
 O FIS básico funciona, mas é menos estável e mais impreciso.
+
+---
+
+## ⚙️ Requisitos
+
+- Python 3.8+  
+- Bibliotecas necessárias: numpy, scikit-fuzzy, matplotlib, torch, deap  
+
+### Instalação das dependências:
+
+```bash
+pip install numpy scikit-fuzzy matplotlib torch deap
+
+---
+
